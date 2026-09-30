@@ -1,0 +1,194 @@
+# dao - stake-weighted governance treasuries, backed by real wallet/pay/
+# require. Members contribute real money into a shared treasury and get
+# voting power equal to what they put in (a real `pay`, not a database
+# row). A proposal can only pay out of the treasury once a real
+# `require` confirms TWO aggregate conditions across every member, not
+# just the recipient's or proposer's own wallet:
+#
+#   1. quorum:   enough of the DAO's TOTAL voting power actually voted
+#   2. majority: of the decisive (yes/no, not abstain) votes cast, yes
+#                strictly outweighs no by the DAO's own majority bar
+#
+# Both are computed fresh at tally time from every vote on record - the
+# same "cross-cutting aggregate, not a single-wallet check" shape as
+# LarzInsure's solvency floor, but for governance consensus instead of
+# financial reserve. Unlike LarzBounty/LarzCrowd, contributions pool
+# PERMANENTLY (real `pay` directly, no escrow/refund path) - the same
+# choice LarzInsure made, for the same reason: this is now the DAO's
+# money, not a refundable deposit.
+#
+#   import "dao" as dao
+#   let b = dao.load("board.json")
+#   dao.fund(b, "alice", 200.00)                            # demo-only faucet
+#   let id = dao.create_dao(b, "Marketing Guild", 0.4, 0.5)  # 40% quorum, >50% majority
+#   dao.contribute(b, id, "alice", 100.00)                  # alice now has 100 voting power
+#   let pid = dao.propose(b, id, "alice", "designer", 50.00, "new logo", 3600)
+#   dao.vote(b, id, pid, "alice", "yes")
+#   dao.tally(b, id, pid)                                   # after the deadline
+#   dao.save(b, "board.json")
+
+import "vendor/json.lz" as json
+import "moneyx.lz" as moneyx
+import "vendor/uuid.lz" as uuid
+
+fn new_board() { return {"wallets": {}, "daos": {}} }
+
+fn load(path) {
+  if not file_exists(path) { return new_board() }
+  return json.parse(read_file(path))
+}
+
+fn save(board, path) { write_file(path, json.pretty(board)) }
+
+fn balance(board, name) { return board["wallets"].has(name) ? board["wallets"][name] : 0.0 }
+
+fn _set_balance(board, name, f) { board["wallets"][name] = f }
+
+# Demo-only faucet - see the sibling LarzBounty/LarzCrowd/LarzInsure/
+# LarzGig projects' own README precedent for why this exists and isn't
+# a real payment rail.
+fn fund(board, name, amount) { _set_balance(board, name, balance(board, name) + amount) }
+
+fn create_dao(board, name, quorum_pct, majority_pct) {
+  let id = uuid.v4()
+  board["daos"][id] = {
+    "id": id, "name": name, "quorum_pct": quorum_pct, "majority_pct": majority_pct,
+    "treasury_balance": 0.0, "voting_power": {}, "proposals": {}, "created_at": time()
+  }
+  return id
+}
+
+fn get_dao(board, id) { return board["daos"].has(id) ? board["daos"][id] : nil }
+
+fn list_daos(board) {
+  let out = []
+  for id in keys(board["daos"]) { out.push(board["daos"][id]) }
+  return out
+}
+
+fn voting_power_of(dao, member) { return dao["voting_power"].has(member) ? dao["voting_power"][member] : 0.0 }
+
+fn total_voting_power(dao) {
+  let sum = 0.0
+  for m in keys(dao["voting_power"]) { sum = sum + dao["voting_power"][m] }
+  return sum
+}
+
+fn get_proposal(dao, id) { return dao["proposals"].has(id) ? dao["proposals"][id] : nil }
+
+# Real money, gone from the member's wallet and into the treasury
+# permanently, the instant this runs - voting power is minted 1:1
+# against it, not assigned separately.
+fn contribute(board, dao_id, member, amount) {
+  let dao = get_dao(board, dao_id)
+  if dao == nil { return {"ok": false, "error": "no such dao"} }
+
+  wallet member_w = moneyx.of(balance(board, member))
+  wallet treasury_w = moneyx.of(dao["treasury_balance"])
+
+  try {
+    pay moneyx.of(amount) from member_w to treasury_w
+  } catch e {
+    return {"ok": false, "error": e["message"]}
+  }
+
+  _set_balance(board, member, moneyx.to_float(member_w.balance))
+  dao["treasury_balance"] = moneyx.to_float(treasury_w.balance)
+  dao["voting_power"][member] = voting_power_of(dao, member) + amount
+  return {"ok": true, "voting_power": dao["voting_power"][member]}
+}
+
+fn propose(board, dao_id, proposer, recipient, amount, description, voting_period_secs) {
+  let dao = get_dao(board, dao_id)
+  if dao == nil { return {"ok": false, "error": "no such dao"} }
+
+  try {
+    require voting_power_of(dao, proposer) > 0.0, "only a DAO member with voting power may propose"
+  } catch e {
+    return {"ok": false, "error": e["message"]}
+  }
+
+  let id = uuid.v4()
+  dao["proposals"][id] = {
+    "id": id, "proposer": proposer, "recipient": recipient, "amount": amount,
+    "description": description, "deadline": time() + voting_period_secs,
+    "status": "open", "votes": {}, "tally": nil, "created_at": time()
+  }
+  return {"ok": true, "id": id}
+}
+
+# A vote can be changed any time before the deadline (overwrites the
+# member's own prior vote) - weight is captured at the moment of voting,
+# using the member's CURRENT voting power, so a contribution made after
+# an earlier vote isn't retroactively counted unless they vote again.
+fn vote(board, dao_id, proposal_id, member, choice) {
+  let dao = get_dao(board, dao_id)
+  if dao == nil { return {"ok": false, "error": "no such dao"} }
+  let p = get_proposal(dao, proposal_id)
+  if p == nil { return {"ok": false, "error": "no such proposal"} }
+  if p["status"] != "open" { return {"ok": false, "error": "proposal is " + p["status"] + ", not open"} }
+  if time() >= p["deadline"] { return {"ok": false, "error": "voting period has ended"} }
+  if choice != "yes" and choice != "no" and choice != "abstain" { return {"ok": false, "error": "choice must be yes, no, or abstain"} }
+
+  let power = voting_power_of(dao, member)
+  try {
+    require power > 0.0, "only a DAO member with voting power may vote"
+  } catch e {
+    return {"ok": false, "error": e["message"]}
+  }
+
+  p["votes"][member] = {"choice": choice, "weight": power}
+  return {"ok": true}
+}
+
+# Settles a proposal after its voting period ends. Two real require
+# checks gate the payout - quorum against the DAO's TOTAL voting power
+# (so members who never joined can't be ignored out of the denominator),
+# then majority among just the decisive yes/no votes (abstain counts
+# toward quorum, not toward which way the decision goes). Either one
+# failing rejects the proposal outright - no partial payout, nothing
+# moves.
+fn tally(board, dao_id, proposal_id) {
+  let dao = get_dao(board, dao_id)
+  if dao == nil { return {"ok": false, "error": "no such dao"} }
+  let p = get_proposal(dao, proposal_id)
+  if p == nil { return {"ok": false, "error": "no such proposal"} }
+  if p["status"] != "open" { return {"ok": false, "error": "proposal is " + p["status"] + ", not open"} }
+  if time() < p["deadline"] { return {"ok": false, "error": "voting period hasn't ended yet"} }
+
+  let total_power = total_voting_power(dao)
+  let yes_w = 0.0
+  let no_w = 0.0
+  let cast_w = 0.0
+  for voter in keys(p["votes"]) {
+    let v = p["votes"][voter]
+    cast_w = cast_w + v["weight"]
+    if v["choice"] == "yes" { yes_w = yes_w + v["weight"] }
+    else if v["choice"] == "no" { no_w = no_w + v["weight"] }
+  }
+
+  try {
+    require cast_w >= dao["quorum_pct"] * total_power, "quorum not reached"
+    require yes_w > dao["majority_pct"] * (yes_w + no_w), "majority not reached"
+  } catch e {
+    p["status"] = "rejected"
+    p["tally"] = {"yes_weight": yes_w, "no_weight": no_w, "cast_weight": cast_w, "total_power": total_power, "reason": e["message"]}
+    return {"ok": true, "passed": false, "reason": e["message"]}
+  }
+
+  wallet treasury_w = moneyx.of(dao["treasury_balance"])
+  wallet recipient_w = moneyx.of(balance(board, p["recipient"]))
+  try {
+    pay moneyx.of(p["amount"]) from treasury_w to recipient_w
+  } catch e {
+    p["status"] = "rejected"
+    p["tally"] = {"yes_weight": yes_w, "no_weight": no_w, "cast_weight": cast_w, "total_power": total_power, "reason": "treasury cannot cover the requested amount"}
+    return {"ok": true, "passed": false, "reason": "treasury cannot cover the requested amount"}
+  }
+
+  _set_balance(board, p["recipient"], moneyx.to_float(recipient_w.balance))
+  dao["treasury_balance"] = moneyx.to_float(treasury_w.balance)
+  p["status"] = "passed"
+  p["tally"] = {"yes_weight": yes_w, "no_weight": no_w, "cast_weight": cast_w, "total_power": total_power}
+  return {"ok": true, "passed": true}
+}

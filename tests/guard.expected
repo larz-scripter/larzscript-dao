@@ -1,0 +1,12 @@
+alice balance is now $200
+created dao xxxxxxxx  "Only DAO"  quorum 40%  majority 50%
+full id: UUID
+error: no dao matching id 
+error: no dao matching id ab
+alice contributed $100 - voting power now 100
+proposal xxxxxxxx opened - $10 to grantee
+full id: UUID
+--- a non-member (no voting power) tries to vote ---
+error: only a DAO member with voting power may vote (line 135)
+--- voting after the deadline ---
+error: voting period has ended

@@ -1,0 +1,34 @@
+alice balance is now $200
+bob balance is now $200
+carol balance is now $200
+created dao xxxxxxxx  "Core Protocol"  quorum 40%  majority 50%
+full id: UUID
+alice contributed $100 - voting power now 100
+bob contributed $50 - voting power now 50
+carol contributed $30 - voting power now 30
+--- quorum failure: only carol (weight 30 of 180 total) votes ---
+proposal xxxxxxxx opened - $50 to grantee
+full id: UUID
+carol voted yes
+REJECTED: quorum not reached (line 171)
+grantee: $0
+--- majority failure: everyone votes, but no (100) beats yes (80) ---
+proposal xxxxxxxx opened - $50 to grantee
+full id: UUID
+alice voted no
+bob voted yes
+carol voted yes
+REJECTED: majority not reached (line 172)
+grantee: $0
+id:        UUID
+name:      Core Protocol
+treasury:  $180
+quorum:    40%  of total voting power 180
+majority:  50%  of decisive (yes/no) votes
+members:
+  - alice  power 100
+  - bob  power 50
+  - carol  power 30
+proposals:
+  - xxxxxxxx  $50 to grantee  [rejected]  quorum test
+  - xxxxxxxx  $50 to grantee  [rejected]  majority test

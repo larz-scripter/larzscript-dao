@@ -1,0 +1,204 @@
+#!/usr/bin/env larzscript
+# larzdao - CLI for the stake-weighted governance treasuries in
+# lib/dao.lz.
+#
+#   larzdao fund alice 200
+#   larzdao create-dao "Marketing Guild" 0.4 0.5
+#   larzdao contribute <dao_id> alice 100
+#   larzdao propose <dao_id> alice designer 50 "new logo" --period=3600
+#   larzdao vote <dao_id> <proposal_id> alice yes
+#   larzdao tally <dao_id> <proposal_id>
+#   larzdao show <dao_id>
+#   larzdao proposal <dao_id> <proposal_id>
+#
+# --board=path overrides the default ./board.json
+
+import "../lib/vendor/args.lz" as argparse
+import "../lib/vendor/table.lz" as table
+import "../lib/dao.lz" as dao
+
+let VERSION = "0.1.0"
+
+let USAGE = "larzdao " + VERSION + " - stake-weighted governance treasuries, backed by real wallet/pay/require\n" +
+  "\n" +
+  "usage:\n" +
+  "  larzdao fund <name> <amount>\n" +
+  "  larzdao create-dao <name> <quorum_pct> <majority_pct>\n" +
+  "  larzdao contribute <dao_id> <member> <amount>\n" +
+  "  larzdao propose <dao_id> <proposer> <recipient> <amount> <description> --period=<secs>\n" +
+  "  larzdao vote <dao_id> <proposal_id> <member> <yes|no|abstain>\n" +
+  "  larzdao tally <dao_id> <proposal_id>\n" +
+  "  larzdao list\n" +
+  "  larzdao show <dao_id>\n" +
+  "  larzdao proposal <dao_id> <proposal_id>\n" +
+  "  larzdao balance <name>\n" +
+  "\n" +
+  "options:\n" +
+  "  --board=<path>   board file to read/write (default: ./board.json)\n"
+
+fn fail(msg) { print("error: " + msg); exit(1) }
+fn short(id) { return id[0:8] }
+
+fn _find_dao_by_prefix(board, prefix) {
+  if len(prefix) < 4 { return nil }
+  for id in keys(board["daos"]) {
+    if id.starts_with(prefix) { return id }
+  }
+  return nil
+}
+
+fn _find_proposal_by_prefix(d, prefix) {
+  if len(prefix) < 4 { return nil }
+  for id in keys(d["proposals"]) {
+    if id.starts_with(prefix) { return id }
+  }
+  return nil
+}
+
+fn cmd_fund(board, positional) {
+  if len(positional) < 2 { fail("fund needs <name> <amount>") }
+  let name = positional[0]
+  let amount = float(positional[1])
+  dao.fund(board, name, amount)
+  print(name + " balance is now $" + str(dao.balance(board, name)))
+}
+
+fn cmd_create_dao(board, positional) {
+  if len(positional) < 3 { fail("create-dao needs <name> <quorum_pct> <majority_pct>") }
+  let id = dao.create_dao(board, positional[0], float(positional[1]), float(positional[2]))
+  print("created dao " + short(id) + "  \"" + positional[0] + "\"  quorum " + str(float(positional[1]) * 100) + "%  majority " + str(float(positional[2]) * 100) + "%")
+  print("full id: " + id)
+}
+
+fn cmd_contribute(board, positional) {
+  if len(positional) < 3 { fail("contribute needs <dao_id> <member> <amount>") }
+  let id = _find_dao_by_prefix(board, positional[0])
+  if id == nil { fail("no dao matching id " + positional[0]) }
+  let r = dao.contribute(board, id, positional[1], float(positional[2]))
+  if not r["ok"] { fail(r["error"]) }
+  print(positional[1] + " contributed $" + positional[2] + " - voting power now " + str(r["voting_power"]))
+}
+
+fn cmd_propose(board, positional, parsed) {
+  if len(positional) < 4 { fail("propose needs <dao_id> <proposer> <recipient> <amount> <description>") }
+  let id = _find_dao_by_prefix(board, positional[0])
+  if id == nil { fail("no dao matching id " + positional[0]) }
+  let period_flag = argparse.flag(parsed, "period")
+  if period_flag == nil { fail("propose needs --period=<secs>") }
+  let description = len(positional) > 4 ? positional[4] : ""
+  let r = dao.propose(board, id, positional[1], positional[2], float(positional[3]), description, float(period_flag))
+  if not r["ok"] { fail(r["error"]) }
+  print("proposal " + short(r["id"]) + " opened - $" + positional[3] + " to " + positional[2])
+  print("full id: " + r["id"])
+}
+
+fn cmd_vote(board, positional) {
+  if len(positional) < 4 { fail("vote needs <dao_id> <proposal_id> <member> <yes|no|abstain>") }
+  let id = _find_dao_by_prefix(board, positional[0])
+  if id == nil { fail("no dao matching id " + positional[0]) }
+  let d = dao.get_dao(board, id)
+  let pid = _find_proposal_by_prefix(d, positional[1])
+  if pid == nil { fail("no proposal matching id " + positional[1]) }
+  let r = dao.vote(board, id, pid, positional[2], positional[3])
+  if not r["ok"] { fail(r["error"]) }
+  print(positional[2] + " voted " + positional[3])
+}
+
+fn cmd_tally(board, positional) {
+  if len(positional) < 2 { fail("tally needs <dao_id> <proposal_id>") }
+  let id = _find_dao_by_prefix(board, positional[0])
+  if id == nil { fail("no dao matching id " + positional[0]) }
+  let d = dao.get_dao(board, id)
+  let pid = _find_proposal_by_prefix(d, positional[1])
+  if pid == nil { fail("no proposal matching id " + positional[1]) }
+  let r = dao.tally(board, id, pid)
+  if not r["ok"] { fail(r["error"]) }
+  if r["passed"] { print("PASSED - paid out") } else { print("REJECTED: " + r["reason"]) }
+}
+
+fn cmd_list(board) {
+  let daos = dao.list_daos(board)
+  if len(daos) == 0 { print("no daos"); return }
+  let rows = [["id", "name", "treasury", "quorum", "majority", "members"]]
+  for d in daos {
+    rows.push([short(d["id"]), d["name"], "$" + str(d["treasury_balance"]), str(d["quorum_pct"] * 100) + "%", str(d["majority_pct"] * 100) + "%", str(len(d["voting_power"]))])
+  }
+  print(table.render(rows))
+}
+
+fn cmd_show(board, positional) {
+  if len(positional) < 1 { fail("show needs <dao_id>") }
+  let id = _find_dao_by_prefix(board, positional[0])
+  if id == nil { fail("no dao matching id " + positional[0]) }
+  let d = dao.get_dao(board, id)
+  print("id:        " + d["id"])
+  print("name:      " + d["name"])
+  print("treasury:  $" + str(d["treasury_balance"]))
+  print("quorum:    " + str(d["quorum_pct"] * 100) + "%  of total voting power " + str(dao.total_voting_power(d)))
+  print("majority:  " + str(d["majority_pct"] * 100) + "%  of decisive (yes/no) votes")
+  print("members:")
+  for m in keys(d["voting_power"]) {
+    print("  - " + m + "  power " + str(d["voting_power"][m]))
+  }
+  print("proposals:")
+  for pid in keys(d["proposals"]) {
+    let p = d["proposals"][pid]
+    print("  - " + short(pid) + "  $" + str(p["amount"]) + " to " + p["recipient"] + "  [" + p["status"] + "]  " + p["description"])
+  }
+}
+
+fn cmd_proposal(board, positional) {
+  if len(positional) < 2 { fail("proposal needs <dao_id> <proposal_id>") }
+  let id = _find_dao_by_prefix(board, positional[0])
+  if id == nil { fail("no dao matching id " + positional[0]) }
+  let d = dao.get_dao(board, id)
+  let pid = _find_proposal_by_prefix(d, positional[1])
+  if pid == nil { fail("no proposal matching id " + positional[1]) }
+  let p = dao.get_proposal(d, pid)
+  print("id:          " + p["id"])
+  print("proposer:    " + p["proposer"])
+  print("recipient:   " + p["recipient"])
+  print("amount:      $" + str(p["amount"]))
+  print("description: " + p["description"])
+  print("status:      " + p["status"])
+  print("votes:")
+  for voter in keys(p["votes"]) {
+    let v = p["votes"][voter]
+    print("  - " + voter + "  " + v["choice"] + "  (weight " + str(v["weight"]) + ")")
+  }
+  if p["tally"] != nil {
+    print("tally: yes=" + str(p["tally"]["yes_weight"]) + " no=" + str(p["tally"]["no_weight"]) + " cast=" + str(p["tally"]["cast_weight"]) + " total_power=" + str(p["tally"]["total_power"]))
+  }
+}
+
+fn cmd_balance(board, positional) {
+  if len(positional) < 1 { fail("balance needs <name>") }
+  print(positional[0] + ": $" + str(dao.balance(board, positional[0])))
+}
+
+fn main() {
+  let parsed = argparse.parse(args)
+  let positional = parsed["positional"]
+  if len(positional) < 1 { print(USAGE); exit(1) }
+  let command = positional[0]
+  let rest = positional[1:]
+  let board_path = argparse.flag(parsed, "board", "board.json")
+  let board = dao.load(board_path)
+
+  if command == "fund" { cmd_fund(board, rest) }
+  else if command == "create-dao" { cmd_create_dao(board, rest) }
+  else if command == "contribute" { cmd_contribute(board, rest) }
+  else if command == "propose" { cmd_propose(board, rest, parsed) }
+  else if command == "vote" { cmd_vote(board, rest) }
+  else if command == "tally" { cmd_tally(board, rest) }
+  else if command == "list" { cmd_list(board) }
+  else if command == "show" { cmd_show(board, rest) }
+  else if command == "proposal" { cmd_proposal(board, rest) }
+  else if command == "balance" { cmd_balance(board, rest) }
+  else if command == "help" or command == "--help" or command == "-h" { print(USAGE); exit(0) }
+  else { fail("unknown command \"" + command + "\" - see: larzdao help") }
+
+  dao.save(board, board_path)
+}
+
+main()

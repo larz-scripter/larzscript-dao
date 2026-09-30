@@ -1,0 +1,36 @@
+alice balance is now $200
+bob balance is now $200
+carol balance is now $200
+created dao xxxxxxxx  "Marketing Guild"  quorum 40%  majority 50%
+full id: UUID
+alice contributed $100 - voting power now 100
+bob contributed $50 - voting power now 50
+carol contributed $30 - voting power now 30
+id:        UUID
+name:      Marketing Guild
+treasury:  $180
+quorum:    40%  of total voting power 180
+majority:  50%  of decisive (yes/no) votes
+members:
+  - alice  power 100
+  - bob  power 50
+  - carol  power 30
+proposals:
+proposal xxxxxxxx opened - $50 to designer
+full id: UUID
+alice voted yes
+bob voted yes
+carol voted no
+PASSED - paid out
+designer: $50
+id:          UUID
+proposer:    alice
+recipient:   designer
+amount:      $50
+description: new logo
+status:      passed
+votes:
+  - alice  yes  (weight 100)
+  - bob  yes  (weight 50)
+  - carol  no  (weight 30)
+tally: yes=150 no=30 cast=180 total_power=180
